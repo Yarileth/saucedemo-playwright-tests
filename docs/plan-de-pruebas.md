@@ -154,7 +154,7 @@ Todos los casos listados están **automatizados**.
 | TC-06 | Cerrar el mensaje de error con la X | Prueba de UI | El error deja de mostrarse | P3 | `technical/login.spec.ts` |
 | TC-07 | La contraseña se enmascara | Prueba de seguridad | `input[type="password"]` | P2 | `technical/login.spec.ts` |
 | TC-08 | Logout corta la sesión `@smoke` | Transición de estados | Vuelve al login; ir "atrás" no restaura la sesión | P1 | `technical/login.spec.ts` |
-| TC-09 | Performance con `performance_glitch_user` | Prueba no funcional | El inventario carga por debajo del umbral configurado | P3 | `technical/login.spec.ts` |
+| TC-09 | `performance_glitch_user` es medible más lento que `standard_user`, pero funcional **[defecto conocido]** | Prueba no funcional, comparativa | El usuario degradado tarda más que el normal y aun así el inventario carga, por debajo del techo de regresión | P3 | `technical/login.spec.ts` |
 | TC-10 | Acceso directo por URL a 5 rutas protegidas sin sesión | Prueba negativa / seguridad | Redirige al login con el mensaje de ruta protegida (5 casos parametrizados) | P1 | `technical/security-routes.spec.ts` |
 | TC-11 | Ruta protegida tras cerrar sesión | Prueba negativa / seguridad | Rechaza el acceso | P1 | `technical/security-routes.spec.ts` |
 | TC-12 | El inventario muestra los 6 productos `@smoke` | Basado en especificación | 6 ítems, todos los nombres del catálogo | P2 | `technical/inventory.spec.ts` |
@@ -175,6 +175,19 @@ Todos los casos listados están **automatizados**.
 | TC-27 | `standard_user` sí muestra 6 imágenes distintas (contraste con TC-26) | Caracterización | 6 `src` únicos, ninguno con "404" | P2 | `technical/known-defects.spec.ts` |
 
 **Total: 35 IDs de caso (27 técnicos + 8 de negocio), que se expanden en 41 tests ejecutables** — TC-10 se parametriza en 5 rutas y TC-21 en 3 combinaciones de campos. **100% automatizados.**
+
+---
+
+### 6.3 Hallazgos de la primera ejecución en CI
+
+La primera corrida real de la suite (GitHub Actions) dio **37 pasados de 41**. Los 4 fallos no fueron defectos del sitio sino de la propia automatización, y ambas causas quedaron corregidas:
+
+| Fallo | Casos afectados | Causa raíz | Corrección |
+|---|---|---|---|
+| Timeout al clickear el menú lateral | TC-08, TC-11, BN-07 | El atributo `data-test="open-menu"` (y `close-menu`) no está en el botón sino en la `<img>` decorativa del ícono. El botón real de react-burger-menu es un hermano posicionado encima, que intercepta el puntero: Playwright espera a que el elemento sea clickeable y agota el timeout. | Usar `#react-burger-menu-btn` y `#react-burger-cross-btn`, los únicos dos locators de la suite que no son `data-test` (documentado en el código). |
+| Umbral de performance imposible | TC-09 | El test exigía que el inventario cargara en menos de 4 s con `performance_glitch_user`, un usuario cuya demora de ~5 s está inyectada a propósito. El caso fallaba por diseño, y un umbral absoluto además depende de la máquina. | Rediseño comparativo: se mide el mismo flujo con `standard_user` y con el usuario degradado en la misma corrida, y se verifica que el segundo tarda más pero igual carga, con un techo de regresión holgado. |
+
+Ambos hallazgos ilustran por qué la ejecución real es parte del diseño de pruebas y no un trámite posterior: ninguna de las dos causas era detectable leyendo el código, y la segunda era un error conceptual en el diseño del caso, no un problema técnico.
 
 ---
 
@@ -241,7 +254,7 @@ En CI (workflow incluido en `.github/workflows/playwright.yml`) **ambos** report
 | Fragilidad de locators ante cambios de UI | Uso exclusivo de `data-test` vía `getByTestId()`; locators centralizados en Page Objects |
 | Tests inestables (*flaky*) por timing | Aserciones con auto-espera de Playwright (`expect(locator)`), sin `waitForTimeout` en toda la suite |
 | Dependencias de orden entre tests | Aislamiento por contexto de navegador; cada test construye su propia precondición |
-| Falsos positivos en el caso de performance | Umbral configurable por variable de entorno (`PERF_THRESHOLD_MS`) |
+| Falsos positivos en el caso de performance | Diseño comparativo (degradado vs. normal en la misma corrida) en lugar de un umbral absoluto dependiente de la máquina, más un techo de regresión holgado y configurable (`PERF_THRESHOLD_MS`) |
 | Datos esperados desactualizados | Todos los valores verificados contra el sitio real y centralizados en `src/data/testData.ts` |
 
 ---
