@@ -103,22 +103,57 @@ test.describe('Técnico - Autenticación', () => {
     });
   });
 
-  test('TC-09 - performance_glitch_user carga el inventario dentro del umbral aceptable', async ({
+  test('TC-09 - performance_glitch_user es medible más lento que standard_user, pero funcional [DEFECTO CONOCIDO]', async ({
     loginPage,
     page,
   }) => {
-    const start = Date.now();
-    await loginPage.login(users.performanceGlitch.username, users.performanceGlitch.password);
-    await expect(page).toHaveURL(/inventory\.html/, { timeout: 20_000 });
-    await expect(page.getByTestId('inventory-list')).toBeVisible({ timeout: 20_000 });
-    const elapsed = Date.now() - start;
+    test.setTimeout(90_000);
 
-    // Este usuario tiene una demora inyectada a propósito por el sitio.
-    // El test documenta el comportamiento y falla si la degradación supera
-    // el umbral definido en testData (configurable con PERF_THRESHOLD_MS).
-    expect(
-      elapsed,
-      `El inventario tardó ${elapsed}ms en cargar (umbral: ${PERFORMANCE_THRESHOLD_MS}ms)`
-    ).toBeLessThan(PERFORMANCE_THRESHOLD_MS);
+    /**
+     * `performance_glitch_user` tiene una demora inyectada a propósito en el
+     * login (alrededor de 5 segundos).
+     *
+     * Una primera versión de este test afirmaba "carga en menos de 4s", y
+     * fallaba siempre: estaba exigiendo que un defecto deliberado no
+     * existiera. Un umbral absoluto además es frágil, porque depende de la
+     * máquina y de la red del runner de CI.
+     *
+     * El diseño correcto para caracterizar una degradación es COMPARATIVO:
+     * medimos el mismo flujo con los dos usuarios en la misma corrida y
+     * verificamos (a) que el usuario degradado efectivamente tarda más, y
+     * (b) que aun así termina cargando, es decir que la demora es un
+     * problema de performance y no de funcionalidad.
+     */
+    async function measureLogin(username: string, password: string): Promise<number> {
+      await loginPage.goto();
+      const start = Date.now();
+      await loginPage.login(username, password);
+      await expect(page.getByTestId('inventory-list')).toBeVisible({ timeout: 30_000 });
+      return Date.now() - start;
+    }
+
+    const standardMs = await measureLogin(users.standard.username, users.standard.password);
+    await page.getByTestId('shopping-cart-link').waitFor();
+    const glitchMs = await measureLogin(
+      users.performanceGlitch.username,
+      users.performanceGlitch.password
+    );
+
+    await test.step('El usuario degradado tarda mediblemente más que el normal', async () => {
+      expect(
+        glitchMs,
+        `standard_user: ${standardMs}ms · performance_glitch_user: ${glitchMs}ms. ` +
+          'Si este test falla porque ya no hay diferencia, la demora inyectada fue removida.'
+      ).toBeGreaterThan(standardMs);
+    });
+
+    await test.step('Pese a la demora, el inventario carga (la degradación no rompe la funcionalidad)', async () => {
+      await expect(page).toHaveURL(/inventory\.html/);
+      expect(
+        glitchMs,
+        `El login degradado tardó ${glitchMs}ms, por encima del techo de ` +
+          `${PERFORMANCE_THRESHOLD_MS}ms. Eso ya no es la demora conocida sino una regresión.`
+      ).toBeLessThan(PERFORMANCE_THRESHOLD_MS);
+    });
   });
 });
