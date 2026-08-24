@@ -1,18 +1,33 @@
 #!/usr/bin/env node
 /**
- * Genera un dashboard HTML con gráficas a partir del results.json que produce
- * el reporter JSON de Playwright.
+ * Genera un reporte HTML con gráficas a partir del results.json de Playwright.
  *
- * El reporte HTML nativo de Playwright es excelente para DEPURAR un fallo
- * (trace, video, screenshot), pero no tiene gráficas ni una vista de resumen
- * ejecutivo. Este script cubre eso: una página autocontenida, sin dependencias,
- * pensada para compartir con alguien que no va a abrir un trace.
+ * Por qué existe: el reporte HTML nativo de Playwright es excelente para
+ * DEPURAR un fallo (trace, video, screenshot), pero no tiene gráficas ni una
+ * vista de resumen. Este reporte cubre lo otro: el estado de la corrida de un
+ * vistazo, para compartir con alguien que no va a abrir un trace.
+ *
+ * Todas las gráficas son SVG. Es una decisión, no un detalle: los navegadores
+ * NO imprimen `background-color` por defecto, así que un gráfico hecho con
+ * divs de fondo desaparece al exportar a PDF. El `fill` de un <rect> es
+ * contenido y siempre se imprime.
  *
  * Uso:  node scripts/generate-dashboard.mjs [entrada.json] [salida.html]
  * Default: test-results/results.json -> test-results/dashboard.html
  */
 import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 import { dirname, basename } from 'node:path';
+import { flattenCases, buildModel, STATUS_ORDER, STATUS_LABEL, groupOf } from './lib/data.mjs';
+import {
+  esc,
+  fmtDuration,
+  stackedBar,
+  magnitudeBar,
+  statusChip,
+  gauge,
+  timeline,
+  riskMatrix,
+} from './lib/render.mjs';
 
 const inputPath = process.argv[2] ?? 'test-results/results.json';
 const outputPath = process.argv[3] ?? 'test-results/dashboard.html';
@@ -20,166 +35,22 @@ const outputPath = process.argv[3] ?? 'test-results/dashboard.html';
 let report;
 try {
   report = JSON.parse(readFileSync(inputPath, 'utf8'));
-} catch (err) {
-  console.error(`\n[dashboard] No pude leer "${inputPath}".`);
-  console.error('[dashboard] Corré primero: npm test\n');
+} catch {
+  console.error(`\n[reporte] No pude leer "${inputPath}".`);
+  console.error('[reporte] Corré primero: npm test\n');
   process.exit(1);
 }
 
-/* ------------------------------------------------------------------ *
- * 1. Aplanar el árbol de suites de Playwright a una lista de casos
- * ------------------------------------------------------------------ */
-
-/** Estado normalizado a partir del `status` (outcome) del test. */
-function normalizeStatus(outcome) {
-  switch (outcome) {
-    case 'expected':
-      return 'passed';
-    case 'unexpected':
-      return 'failed';
-    case 'flaky':
-      return 'flaky';
-    case 'skipped':
-      return 'skipped';
-    default:
-      return outcome ?? 'unknown';
-  }
-}
-
-/** Extrae el ID de caso (BN-01 / TC-23) del título, si lo tiene. */
-function extractCaseId(title) {
-  const match = title.match(/\b((?:BN|TC)-\d+)\b/);
-  return match ? match[1] : '';
-}
-
-/**
- * Quita el prefijo "TC-01 - " del título, porque el ID ya se muestra en su
- * propia columna y repetirlo duplica información en cada fila.
- */
-function stripCaseId(title) {
-  return title.replace(/^\s*(?:BN|TC)-\d+\s*[-–—]\s*/, '').trim();
-}
-
-/**
- * Playwright escribe los mensajes de error con códigos de color ANSI (pensados
- * para la terminal). En HTML se verían como basura tipo "[22m", así que los
- * removemos.
- */
-function stripAnsi(text) {
-  // eslint-disable-next-line no-control-regex
-  return String(text ?? '').replace(/\u001b\[[0-9;]*m/g, '');
-}
-
-const cases = [];
-
-function walkSuite(suite, ancestry) {
-  const trail = suite.title ? [...ancestry, suite.title] : ancestry;
-
-  for (const spec of suite.specs ?? []) {
-    for (const test of spec.tests ?? []) {
-      const status = normalizeStatus(test.status);
-      const duration = (test.results ?? []).reduce((acc, r) => acc + (r.duration ?? 0), 0);
-      const failing = (test.results ?? []).find((r) => r.error || r.errors?.length);
-
-      cases.push({
-        caseId: extractCaseId(spec.title),
-        title: stripCaseId(spec.title),
-        suite: trail.filter((t) => !t.endsWith('.ts')).join(' › '),
-        file: spec.file ?? suite.file ?? '',
-        status,
-        duration,
-        retries: Math.max(0, (test.results ?? []).length - 1),
-        error: stripAnsi(failing?.error?.message ?? failing?.errors?.[0]?.message ?? ''),
-      });
-    }
-  }
-
-  for (const child of suite.suites ?? []) walkSuite(child, trail);
-}
-
-for (const suite of report.suites ?? []) walkSuite(suite, []);
-
+const cases = flattenCases(report);
 if (cases.length === 0) {
-  console.error('[dashboard] El results.json no contiene casos. ¿La corrida se interrumpió?');
+  console.error('[reporte] El results.json no contiene casos. ¿La corrida se interrumpió?');
   process.exit(1);
 }
 
-/* ------------------------------------------------------------------ *
- * 2. Agregaciones
- * ------------------------------------------------------------------ */
+const m = buildModel(report, cases);
+const ok = m.failedCases.length === 0;
 
-const STATUS_ORDER = ['passed', 'flaky', 'failed', 'skipped'];
-const STATUS_LABEL = {
-  passed: 'Pasaron',
-  flaky: 'Inestables',
-  failed: 'Fallaron',
-  skipped: 'Omitidos',
-};
-
-const counts = Object.fromEntries(STATUS_ORDER.map((s) => [s, 0]));
-for (const c of cases) counts[c.status] = (counts[c.status] ?? 0) + 1;
-
-const total = cases.length;
-const executed = total - counts.skipped;
-// Un test "flaky" terminó pasando (tras reintento), así que cuenta como pasado
-// para la tasa de éxito, pero se muestra aparte porque es una señal de alerta.
-const successful = counts.passed + counts.flaky;
-const passRate = executed > 0 ? (successful / executed) * 100 : 0;
-
-const totalDuration = report.stats?.duration ?? cases.reduce((a, c) => a + c.duration, 0);
-
-/** Duración agregada por archivo de spec. */
-const byFile = new Map();
-for (const c of cases) {
-  const key = c.file || '(sin archivo)';
-  const entry = byFile.get(key) ?? { file: key, duration: 0, tests: 0, failed: 0 };
-  entry.duration += c.duration;
-  entry.tests += 1;
-  if (c.status === 'failed') entry.failed += 1;
-  byFile.set(key, entry);
-}
-const fileStats = [...byFile.values()].sort((a, b) => b.duration - a.duration);
-
-/** Agrupación por tipo de escenario, según la carpeta del spec. */
-function groupOf(file) {
-  if (file.includes('business')) return 'Negocio';
-  if (file.includes('technical')) return 'Técnico';
-  return 'Otros';
-}
-const byGroup = new Map();
-for (const c of cases) {
-  const key = groupOf(c.file);
-  const entry = byGroup.get(key) ?? { group: key, ...Object.fromEntries(STATUS_ORDER.map((s) => [s, 0])), total: 0 };
-  entry[c.status] += 1;
-  entry.total += 1;
-  byGroup.set(key, entry);
-}
-const groupStats = [...byGroup.values()].sort((a, b) => b.total - a.total);
-
-const failedCases = cases.filter((c) => c.status === 'failed');
-const flakyCases = cases.filter((c) => c.status === 'flaky');
-const slowest = [...cases].sort((a, b) => b.duration - a.duration).slice(0, 8);
-
-/* ------------------------------------------------------------------ *
- * 3. Helpers de formato
- * ------------------------------------------------------------------ */
-
-const esc = (s) =>
-  String(s ?? '')
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;');
-
-function fmtDuration(ms) {
-  if (ms < 1000) return `${Math.round(ms)} ms`;
-  if (ms < 60_000) return `${(ms / 1000).toFixed(1)} s`;
-  const m = Math.floor(ms / 60_000);
-  const s = Math.round((ms % 60_000) / 1000);
-  return `${m} min ${String(s).padStart(2, '0')} s`;
-}
-
-const startedAt = report.stats?.startTime ? new Date(report.stats.startTime) : new Date();
+const startedAt = m.runStart ? new Date(m.runStart) : new Date();
 const startedLabel = startedAt.toLocaleString('es-AR', {
   dateStyle: 'long',
   timeStyle: 'short',
@@ -187,263 +58,289 @@ const startedLabel = startedAt.toLocaleString('es-AR', {
 });
 
 /* ------------------------------------------------------------------ *
- * 4. Render
+ * Bloques
  * ------------------------------------------------------------------ */
 
-// Barra apilada de parte-a-todo (estado de la corrida).
-const stackSegments = STATUS_ORDER.filter((s) => counts[s] > 0)
-  .map((s) => {
-    const pct = (counts[s] / total) * 100;
-    return `<div class="seg seg--${s}" style="flex-basis:${pct.toFixed(3)}%" title="${STATUS_LABEL[s]}: ${counts[s]}"></div>`;
-  })
-  .join('');
+const statusSegments = STATUS_ORDER.filter((s) => m.counts[s] > 0).map((s) => ({
+  status: s,
+  label: STATUS_LABEL[s],
+  value: m.counts[s],
+}));
 
-const legendItems = STATUS_ORDER.map(
-  (s) => `<div class="legend__item${counts[s] === 0 ? ' legend__item--empty' : ''}">
-      <span class="swatch swatch--${s}" aria-hidden="true"></span>
-      <span class="legend__label">${STATUS_LABEL[s]}</span>
-      <span class="legend__value">${counts[s]}</span>
+const legend = STATUS_ORDER.map(
+  (s) => `<div class="legend__item${m.counts[s] === 0 ? ' is-empty' : ''}">
+      ${statusChip(s)}
+      <span class="legend__value">${m.counts[s]}</span>
     </div>`
 ).join('');
 
-// Barras horizontales de duración por archivo (una sola hue = magnitud).
-const maxFileDuration = Math.max(...fileStats.map((f) => f.duration), 1);
-const fileBars = fileStats
-  .map((f) => {
-    const pct = (f.duration / maxFileDuration) * 100;
-    return `<div class="hbar">
-      <div class="hbar__label" title="${esc(f.file)}">${esc(basename(f.file))}</div>
-      <div class="hbar__track"><div class="hbar__fill" style="width:${Math.max(pct, 1.2).toFixed(2)}%"></div></div>
-      <div class="hbar__value">${fmtDuration(f.duration)}<span class="hbar__sub">${f.tests} test${f.tests === 1 ? '' : 's'}</span></div>
-    </div>`;
-  })
+const maxFileDuration = Math.max(...m.fileStats.map((f) => f.duration), 1);
+const fileBars = m.fileStats
+  .map(
+    (f) => `<div class="row">
+      <div class="row__label" title="${esc(f.file)}">${esc(basename(f.file))}</div>
+      <div class="row__plot">${magnitudeBar(f.duration / maxFileDuration, 14, `${basename(f.file)}: ${fmtDuration(f.duration)}`)}</div>
+      <div class="row__value">${fmtDuration(f.duration)}<span class="row__sub">${f.tests} test${f.tests === 1 ? '' : 's'}</span></div>
+    </div>`
+  )
   .join('');
 
-// Barras apiladas por grupo (Técnico / Negocio).
-const groupBars = groupStats
+const groupBars = m.groupStats
   .map((g) => {
-    const segs = STATUS_ORDER.filter((s) => g[s] > 0)
-      .map(
-        (s) =>
-          `<div class="seg seg--${s}" style="flex-basis:${((g[s] / g.total) * 100).toFixed(3)}%" title="${STATUS_LABEL[s]}: ${g[s]}"></div>`
-      )
-      .join('');
-    return `<div class="hbar">
-      <div class="hbar__label">${esc(g.group)}</div>
-      <div class="hbar__track"><div class="stack stack--inline">${segs}</div></div>
-      <div class="hbar__value">${g.total}<span class="hbar__sub">${g.passed + g.flaky}/${g.total} ok</span></div>
+    const segs = STATUS_ORDER.filter((s) => g[s] > 0).map((s) => ({
+      status: s,
+      label: STATUS_LABEL[s],
+      value: g[s],
+    }));
+    return `<div class="row">
+      <div class="row__label">${esc(g.group)}</div>
+      <div class="row__plot">${stackedBar(segs)}</div>
+      <div class="row__value">${g.total}<span class="row__sub">${g.passed + g.flaky}/${g.total} ok</span></div>
     </div>`;
   })
   .join('');
 
-const slowestRows = slowest
+const slowestRows = m.slowest
   .map(
     (c) => `<tr>
-      <td class="cell-id">${esc(c.caseId)}</td>
+      <td class="c-id">${esc(c.caseId)}</td>
       <td>${esc(c.title)}</td>
-      <td class="cell-num">${fmtDuration(c.duration)}</td>
+      <td class="c-num">${fmtDuration(c.duration)}</td>
     </tr>`
   )
   .join('');
 
-function renderIssue(c, kind) {
-  return `<details class="failure">
-        <summary><span class="swatch swatch--${kind}" aria-hidden="true"></span>
-          <strong>${esc(c.caseId || '—')}</strong> ${esc(c.title)}</summary>
-        <div class="failure__meta">${esc(c.suite)} · ${esc(basename(c.file))} · ${fmtDuration(c.duration)}${c.retries ? ` · ${c.retries} reintento${c.retries === 1 ? '' : 's'}` : ''}</div>
-        <pre class="failure__error">${esc(c.error || 'Sin detalle de error en el JSON. Abrí el reporte HTML para ver el trace.')}</pre>
-      </details>`;
+function issueBlock(c, kind) {
+  return `<details class="issue" ${kind === 'failed' ? 'open' : ''}>
+      <summary>${statusChip(kind, `${c.caseId || '—'}`)}<span class="issue__title">${esc(c.title)}</span></summary>
+      <div class="issue__meta">${esc(c.suite)} · ${esc(basename(c.file))} · ${fmtDuration(c.duration)}${c.retries ? ` · ${c.retries} reintento${c.retries === 1 ? '' : 's'}` : ''}</div>
+      <pre class="issue__error">${esc(c.error || 'Sin detalle de error en el JSON. Abrí el reporte nativo para ver el trace.')}</pre>
+    </details>`;
 }
 
-const failureBlocks = failedCases.length
-  ? failedCases.map((c) => renderIssue(c, 'failed')).join('')
-  : `<p class="empty">Ningún caso falló en esta corrida.</p>`;
+const failureBlocks = m.failedCases.length
+  ? m.failedCases.map((c) => issueBlock(c, 'failed')).join('')
+  : '<p class="empty">Ningún caso falló en esta corrida.</p>';
 
-const flakyBlocks = flakyCases.length
-  ? `<p class="note">Estos casos fallaron en el primer intento y pasaron al reintentar. Cuentan como exitosos, pero un test inestable esconde un problema real: o el sitio, o una espera mal puesta en la prueba.</p>` +
-    flakyCases.map((c) => renderIssue(c, 'flaky')).join('')
-  : `<p class="empty">Ningún caso resultó inestable en esta corrida.</p>`;
+const flakyBlocks = m.flakyCases.length
+  ? '<p class="note">Fallaron en el primer intento y pasaron al reintentar. Cuentan como exitosos, pero un test inestable esconde un problema real: o el sitio, o una espera mal puesta en la prueba.</p>' +
+    m.flakyCases.map((c) => issueBlock(c, 'flaky')).join('')
+  : '<p class="empty">Ningún caso resultó inestable en esta corrida.</p>';
 
-const allRows = cases
+const allRows = m.cases
   .map(
-    (c) => `<tr data-status="${c.status}">
-      <td class="cell-id">${esc(c.caseId)}</td>
+    (c) => `<tr>
+      <td class="c-id">${esc(c.caseId)}</td>
       <td>${esc(c.title)}</td>
-      <td>${esc(groupOf(c.file))}</td>
-      <td><span class="tag tag--${c.status}"><span class="swatch swatch--${c.status}" aria-hidden="true"></span>${STATUS_LABEL[c.status]}</span></td>
-      <td class="cell-num">${fmtDuration(c.duration)}</td>
+      <td class="c-dim">${esc(groupOf(c.file))}</td>
+      <td>${statusChip(c.status)}</td>
+      <td class="c-num">${fmtDuration(c.duration)}</td>
     </tr>`
   )
   .join('');
+
+const risksCovered = m.risks.filter((r) => r.coveredCount > 0).length;
+const risksHealthy = m.risks.filter((r) => r.state === 'passed').length;
+
+/* ------------------------------------------------------------------ *
+ * Documento
+ * ------------------------------------------------------------------ */
 
 const html = `<!doctype html>
 <html lang="es">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Resultados E2E — SauceDemo</title>
+<title>Reporte E2E — SauceDemo</title>
 <style>
   :root {
     color-scheme: light;
-    --surface-0: #f4f3f0;
-    --surface-1: #fcfcfb;
-    --border:    #e0dfda;
-    --text-primary:   #0b0b0b;
-    --text-secondary: #52514e;
-    --text-muted:     #77756e;
-    --accent:  #2a78d6;
-    --track:   #eceae5;
-    --passed:  #0ca30c;
-    --flaky:   #fab219;
-    --failed:  #d03b3b;
-    --skipped: #a8a69d;
+    --surface-0:#f4f3f0; --surface-1:#fcfcfb; --surface-2:#efeeea;
+    --border:#e2e1dc; --border-soft:#eceae5;
+    --text-1:#0b0b0b; --text-2:#52514e; --text-3:#78766f;
+    --accent:#2a78d6; --track:#e7e5e0;
+    --st-passed:#0ca30c; --st-flaky:#fab219; --st-failed:#d03b3b; --st-skipped:#a8a69d;
   }
   @media (prefers-color-scheme: dark) {
     :root:not([data-theme="light"]) {
       color-scheme: dark;
-      --surface-0: #121211;
-      --surface-1: #1a1a19;
-      --border:    #33332f;
-      --text-primary:   #ffffff;
-      --text-secondary: #c3c2b7;
-      --text-muted:     #8f8e84;
-      --accent:  #3987e5;
-      --track:   #2a2a27;
-      --skipped: #6b6a62;
+      --surface-0:#111110; --surface-1:#1a1a19; --surface-2:#222220;
+      --border:#33332f; --border-soft:#2a2a27;
+      --text-1:#ffffff; --text-2:#c3c2b7; --text-3:#8f8e84;
+      --accent:#3987e5; --track:#2c2c29;
+      --st-skipped:#6b6a62;
     }
   }
   :root[data-theme="dark"] {
     color-scheme: dark;
-    --surface-0: #121211;
-    --surface-1: #1a1a19;
-    --border:    #33332f;
-    --text-primary:   #ffffff;
-    --text-secondary: #c3c2b7;
-    --text-muted:     #8f8e84;
-    --accent:  #3987e5;
-    --track:   #2a2a27;
-    --skipped: #6b6a62;
+    --surface-0:#111110; --surface-1:#1a1a19; --surface-2:#222220;
+    --border:#33332f; --border-soft:#2a2a27;
+    --text-1:#ffffff; --text-2:#c3c2b7; --text-3:#8f8e84;
+    --accent:#3987e5; --track:#2c2c29;
+    --st-skipped:#6b6a62;
   }
 
-  * { box-sizing: border-box; }
-  body {
-    margin: 0;
-    background: var(--surface-0);
-    color: var(--text-primary);
-    font: 15px/1.55 ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
-    -webkit-font-smoothing: antialiased;
+  *{box-sizing:border-box}
+  html{-webkit-print-color-adjust:exact;print-color-adjust:exact}
+  body{
+    margin:0;background:var(--surface-0);color:var(--text-1);
+    font:15px/1.55 ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+    -webkit-font-smoothing:antialiased;
   }
-  .wrap { max-width: 1120px; margin: 0 auto; padding: 40px 24px 72px; }
+  .wrap{max-width:1120px;margin:0 auto;padding:40px 24px 72px}
 
-  header { margin-bottom: 32px; }
-  h1 { font-size: 24px; font-weight: 640; letter-spacing: -0.015em; margin: 0 0 6px; }
-  .subtitle { color: var(--text-secondary); font-size: 14px; margin: 0; }
-
-  .card {
-    background: var(--surface-1);
-    border: 1px solid var(--border);
-    border-radius: 12px;
-    padding: 24px;
-    margin-bottom: 20px;
-  }
-  .card > h2 {
-    font-size: 12px; font-weight: 620; letter-spacing: 0.06em; text-transform: uppercase;
-    color: var(--text-muted); margin: 0 0 20px;
+  header{margin-bottom:26px;display:flex;flex-wrap:wrap;gap:14px;align-items:baseline;justify-content:space-between}
+  h1{font-size:23px;font-weight:640;letter-spacing:-.015em;margin:0 0 5px}
+  .sub{color:var(--text-2);font-size:13.5px;margin:0}
+  .verdict{
+    display:inline-flex;align-items:center;gap:8px;font-size:13px;font-weight:580;
+    padding:6px 13px;border-radius:999px;border:1px solid var(--border);background:var(--surface-1);
   }
 
-  /* Hero + KPI */
-  .hero-row { display: flex; flex-wrap: wrap; gap: 32px; align-items: flex-start; }
-  .hero { min-width: 190px; }
-  .hero__value { font-size: 60px; line-height: 1; font-weight: 620; letter-spacing: -0.03em; }
-  .hero__label { color: var(--text-secondary); font-size: 13px; margin-top: 8px; }
-  .kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(104px, 1fr)); gap: 12px 24px; flex: 1 1 380px; }
-  .kpi__value { font-size: 25px; font-weight: 600; letter-spacing: -0.02em; }
-  .kpi__label { color: var(--text-secondary); font-size: 12.5px; margin-top: 2px; }
+  .card{background:var(--surface-1);border:1px solid var(--border);border-radius:14px;padding:24px;margin-bottom:18px}
+  .card>h2{font-size:11.5px;font-weight:620;letter-spacing:.07em;text-transform:uppercase;color:var(--text-3);margin:0 0 6px}
+  .card>.hint{font-size:13px;color:var(--text-2);margin:0 0 20px;max-width:74ch}
+  .card>h2+*:not(.hint){margin-top:20px}
 
-  /* Barra apilada */
-  .stack { display: flex; width: 100%; height: 100%; gap: 2px; }
-  .stack--main { height: 14px; border-radius: 4px; overflow: hidden; margin-bottom: 18px; }
-  .stack--inline { border-radius: 3px; overflow: hidden; }
-  .seg { min-width: 2px; }
-  .seg--passed  { background: var(--passed); }
-  .seg--flaky   { background: var(--flaky); }
-  .seg--failed  { background: var(--failed); }
-  .seg--skipped { background: var(--skipped); }
+  /* Resumen */
+  .summary{display:flex;flex-wrap:wrap;gap:34px;align-items:center}
+  .gauge__value{font-size:31px;font-weight:640;fill:var(--text-1);letter-spacing:-.02em}
+  .gauge__caption{font-size:11.5px;fill:var(--text-3)}
+  .kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(96px,1fr));gap:16px 22px;flex:1 1 400px}
+  .kpi__v{font-size:25px;font-weight:600;letter-spacing:-.02em}
+  .kpi__l{color:var(--text-2);font-size:12.5px;margin-top:1px}
 
-  .legend { display: flex; flex-wrap: wrap; gap: 8px 26px; }
-  .legend__item { display: flex; align-items: center; gap: 8px; font-size: 13.5px; }
-  .legend__item--empty { opacity: 0.45; }
-  .legend__label { color: var(--text-secondary); }
-  .legend__value { font-variant-numeric: tabular-nums; font-weight: 580; }
+  /* Marcas */
+  .bar{display:block;overflow:visible}
+  .legend{display:flex;flex-wrap:wrap;gap:9px 26px;margin-top:16px}
+  .legend__item{display:flex;align-items:center;gap:9px;font-size:13.5px}
+  .legend__item.is-empty{opacity:.42}
+  .legend__value{font-variant-numeric:tabular-nums;font-weight:580}
+  .chip{display:inline-flex;align-items:center;gap:7px;white-space:nowrap;color:var(--text-2)}
+  .chip svg{flex:none}
 
-  .swatch { width: 9px; height: 9px; border-radius: 2px; flex: none; display: inline-block; }
-  .swatch--passed  { background: var(--passed); }
-  .swatch--flaky   { background: var(--flaky); }
-  .swatch--failed  { background: var(--failed); }
-  .swatch--skipped { background: var(--skipped); }
+  .row{display:grid;grid-template-columns:minmax(110px,190px) 1fr minmax(84px,auto);gap:16px;align-items:center;margin-bottom:12px}
+  .row:last-child{margin-bottom:0}
+  .row__label{font-size:13.5px;color:var(--text-2);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .row__value{font-size:13px;font-variant-numeric:tabular-nums;text-align:right}
+  .row__sub{display:block;color:var(--text-3);font-size:11.5px}
 
-  /* Barras horizontales */
-  .hbar { display: grid; grid-template-columns: minmax(120px, 210px) 1fr minmax(88px, auto); gap: 16px; align-items: center; margin-bottom: 11px; }
-  .hbar:last-child { margin-bottom: 0; }
-  .hbar__label { font-size: 13.5px; color: var(--text-secondary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .hbar__track { background: var(--track); border-radius: 4px; height: 11px; overflow: hidden; }
-  .hbar__fill { background: var(--accent); height: 100%; border-radius: 4px; }
-  .hbar__value { font-size: 13px; font-variant-numeric: tabular-nums; text-align: right; }
-  .hbar__sub { display: block; color: var(--text-muted); font-size: 11.5px; }
+  /* Timeline */
+  .tl-grid{stroke:var(--border-soft);stroke-width:1}
+  .tl-tick{font-size:10.5px;fill:var(--text-3)}
+  .tl-lane{font-size:11.5px;fill:var(--text-2)}
+  .scroll-x{overflow-x:auto}
+
+  /* Matriz de riesgo */
+  .risk{padding:13px 0;border-bottom:1px solid var(--border-soft)}
+  .risk:last-child{border-bottom:none}
+  .risk__head{display:flex;flex-wrap:wrap;align-items:baseline;gap:10px;margin-bottom:9px}
+  .risk__id{font-weight:620;font-size:13px;font-variant-numeric:tabular-nums;min-width:30px}
+  .risk__desc{font-size:13.5px;color:var(--text-2);flex:1 1 260px}
+  .risk__impact{font-size:11px;letter-spacing:.04em;text-transform:uppercase;color:var(--text-3);border:1px solid var(--border);border-radius:999px;padding:2px 9px}
+  .risk__impact--crítico{color:var(--st-failed);border-color:var(--st-failed)}
+  .risk__cells{display:flex;flex-wrap:wrap;gap:6px}
+  .cell{display:inline-flex;align-items:center;gap:5px;font-size:11.5px;font-variant-numeric:tabular-nums;
+    border:1px solid var(--border);border-radius:6px;padding:3px 8px;background:var(--surface-2);color:var(--text-2)}
+  .cell--absent{opacity:.5;border-style:dashed}
 
   /* Tablas */
-  table { width: 100%; border-collapse: collapse; font-size: 13.5px; }
-  th { text-align: left; font-weight: 580; color: var(--text-muted); font-size: 11.5px; letter-spacing: 0.05em; text-transform: uppercase; padding: 0 12px 10px 0; border-bottom: 1px solid var(--border); }
-  td { padding: 9px 12px 9px 0; border-bottom: 1px solid var(--border); vertical-align: top; }
-  tr:last-child td { border-bottom: none; }
-  .cell-id { font-variant-numeric: tabular-nums; color: var(--text-muted); white-space: nowrap; font-size: 12.5px; }
-  .cell-num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
-  .table-scroll { overflow-x: auto; }
-  .tag { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
+  table{width:100%;border-collapse:collapse;font-size:13.5px}
+  th{text-align:left;font-weight:580;color:var(--text-3);font-size:11px;letter-spacing:.05em;text-transform:uppercase;padding:0 12px 10px 0;border-bottom:1px solid var(--border)}
+  td{padding:9px 12px 9px 0;border-bottom:1px solid var(--border-soft);vertical-align:top}
+  tr:last-child td{border-bottom:none}
+  .c-id{font-variant-numeric:tabular-nums;color:var(--text-3);white-space:nowrap;font-size:12.5px}
+  .c-dim{color:var(--text-2)}
+  .c-num{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
 
   /* Fallos */
-  .failure { border: 1px solid var(--border); border-radius: 8px; padding: 12px 14px; margin-bottom: 10px; }
-  .failure summary { cursor: pointer; display: flex; align-items: center; gap: 8px; font-size: 13.5px; }
-  .failure__meta { color: var(--text-muted); font-size: 12px; margin: 10px 0 8px; }
-  .failure__error { background: var(--surface-0); border: 1px solid var(--border); border-radius: 6px; padding: 12px; font-size: 12px; overflow-x: auto; margin: 0; white-space: pre-wrap; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
-  .empty { color: var(--text-secondary); font-size: 14px; margin: 0; }
-  .note { color: var(--text-secondary); font-size: 13px; margin: 0 0 14px; max-width: 68ch; }
+  .issue{border:1px solid var(--border);border-radius:9px;padding:12px 14px;margin-bottom:10px;background:var(--surface-2)}
+  .issue summary{cursor:pointer;display:flex;align-items:center;gap:9px;font-size:13.5px;flex-wrap:wrap}
+  .issue__title{color:var(--text-1)}
+  .issue__meta{color:var(--text-3);font-size:12px;margin:11px 0 8px}
+  .issue__error{background:var(--surface-1);border:1px solid var(--border);border-radius:7px;padding:12px;
+    font-size:12px;overflow-x:auto;margin:0;white-space:pre-wrap;
+    font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+  .empty{color:var(--text-2);font-size:14px;margin:0}
+  .note{color:var(--text-2);font-size:13px;margin:0 0 14px;max-width:72ch}
 
-  footer { color: var(--text-muted); font-size: 12.5px; margin-top: 28px; }
-  @media (max-width: 620px) {
-    .hbar { grid-template-columns: 1fr; gap: 4px; }
-    .hbar__value { text-align: left; }
-    .hero__value { font-size: 48px; }
+  footer{color:var(--text-3);font-size:12.5px;margin-top:26px}
+  code{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:.92em}
+
+  @media (max-width:640px){
+    .row{grid-template-columns:1fr;gap:5px}
+    .row__value{text-align:left}
+  }
+
+  /* --------------------------------------------------------------
+     Impresión / exportación a PDF.
+     Se fuerza la paleta clara (un PDF con fondo negro no sirve),
+     se conservan los colores de las marcas y se evita que una
+     tarjeta quede cortada entre dos páginas.
+     -------------------------------------------------------------- */
+  @media print {
+    :root{
+      color-scheme:light;
+      --surface-0:#ffffff; --surface-1:#ffffff; --surface-2:#fafaf8;
+      --border:#d8d7d2; --border-soft:#e6e5e0;
+      --text-1:#000000; --text-2:#3a3936; --text-3:#63625c;
+      --accent:#2a78d6; --track:#e7e5e0;
+      --st-passed:#0ca30c; --st-flaky:#e09a00; --st-failed:#d03b3b; --st-skipped:#9c9a92;
+    }
+    body{background:#fff}
+    .wrap{max-width:none;padding:0}
+    .card{break-inside:avoid;page-break-inside:avoid;box-shadow:none;margin-bottom:12px}
+    .issue{break-inside:avoid;page-break-inside:avoid}
+    tr{break-inside:avoid;page-break-inside:avoid}
+    thead{display:table-header-group}
+    .issue__error{white-space:pre-wrap;word-break:break-word}
+    footer{margin-top:14px}
+    @page{margin:14mm}
   }
 </style>
 </head>
 <body>
 <div class="wrap">
+
   <header>
-    <h1>Resultados de la suite E2E — SauceDemo</h1>
-    <p class="subtitle">Corrida del ${esc(startedLabel)} · duración total ${fmtDuration(totalDuration)}</p>
+    <div>
+      <h1>Reporte de ejecución E2E — SauceDemo</h1>
+      <p class="sub">${esc(startedLabel)} · ${m.total} tests en ${fmtDuration(m.runDuration)} · ${m.workers.length} worker${m.workers.length === 1 ? '' : 's'} en paralelo</p>
+    </div>
+    <div class="verdict">${statusChip(ok ? 'passed' : 'failed', ok ? 'Corrida sin fallos' : `${m.failedCases.length} caso${m.failedCases.length === 1 ? '' : 's'} con fallo`)}</div>
   </header>
 
   <section class="card">
-    <div class="hero-row">
-      <div class="hero">
-        <div class="hero__value" style="color:${failedCases.length ? 'var(--failed)' : 'var(--passed)'}">${passRate.toFixed(1)}%</div>
-        <div class="hero__label">de los tests ejecutados pasaron</div>
-      </div>
+    <div class="summary">
+      ${gauge(m.passRate, m.executed ? (m.counts.failed / m.executed) * 100 : 0)}
       <div class="kpis">
-        <div><div class="kpi__value">${total}</div><div class="kpi__label">Tests</div></div>
-        <div><div class="kpi__value">${counts.passed}</div><div class="kpi__label">Pasaron</div></div>
-        <div><div class="kpi__value">${counts.failed}</div><div class="kpi__label">Fallaron</div></div>
-        <div><div class="kpi__value">${counts.flaky}</div><div class="kpi__label">Inestables</div></div>
-        <div><div class="kpi__value">${counts.skipped}</div><div class="kpi__label">Omitidos</div></div>
+        <div><div class="kpi__v">${m.total}</div><div class="kpi__l">Tests</div></div>
+        <div><div class="kpi__v">${m.counts.passed}</div><div class="kpi__l">Pasaron</div></div>
+        <div><div class="kpi__v">${m.counts.failed}</div><div class="kpi__l">Fallaron</div></div>
+        <div><div class="kpi__v">${m.counts.flaky}</div><div class="kpi__l">Inestables</div></div>
+        <div><div class="kpi__v">${m.counts.skipped}</div><div class="kpi__l">Omitidos</div></div>
+        <div><div class="kpi__v">${risksHealthy}/${m.risks.length}</div><div class="kpi__l">Riesgos sanos</div></div>
       </div>
     </div>
   </section>
 
   <section class="card">
     <h2>Distribución de resultados</h2>
-    <div class="stack stack--main">${stackSegments}</div>
-    <div class="legend">${legendItems}</div>
+    <p class="hint">La tasa de éxito se calcula sobre los ${m.executed} tests efectivamente ejecutados: los omitidos no la diluyen.</p>
+    ${stackedBar(statusSegments, 16)}
+    <div class="legend">${legend}</div>
+  </section>
+
+  <section class="card">
+    <h2>Línea de tiempo de la ejecución</h2>
+    <p class="hint">Cada barra es un test ubicado en el tiempo real de la corrida, en la fila del worker que lo ejecutó. Sirve para responder por qué la corrida tardó lo que tardó: dónde hay paralelismo aprovechado, dónde huecos, y qué caso empuja el cierre.</p>
+    ${timeline(m)}
+  </section>
+
+  <section class="card">
+    <h2>Trazabilidad: riesgo → casos → estado</h2>
+    <p class="hint">Los ${m.risks.length} riesgos del análisis del plan de pruebas, con los casos que los mitigan y cómo terminó cada uno en esta corrida. ${risksCovered} de ${m.risks.length} riesgos tienen al menos un caso ejecutado.</p>
+    ${riskMatrix(m.risks)}
   </section>
 
   <section class="card">
@@ -467,18 +364,16 @@ const html = `<!doctype html>
   </section>
 
   <section class="card">
-    <h2>Los 8 casos más lentos</h2>
-    <div class="table-scroll">
-      <table>
-        <thead><tr><th>ID</th><th>Caso</th><th style="text-align:right">Duración</th></tr></thead>
-        <tbody>${slowestRows}</tbody>
-      </table>
-    </div>
+    <h2>Los ${m.slowest.length} casos más lentos</h2>
+    <table>
+      <thead><tr><th>ID</th><th>Caso</th><th style="text-align:right">Duración</th></tr></thead>
+      <tbody>${slowestRows}</tbody>
+    </table>
   </section>
 
   <section class="card">
-    <h2>Detalle completo (${total} tests)</h2>
-    <div class="table-scroll">
+    <h2>Detalle completo (${m.total} tests)</h2>
+    <div class="scroll-x">
       <table>
         <thead><tr><th>ID</th><th>Caso</th><th>Tipo</th><th>Estado</th><th style="text-align:right">Duración</th></tr></thead>
         <tbody>${allRows}</tbody>
@@ -487,15 +382,40 @@ const html = `<!doctype html>
   </section>
 
   <footer>
-    Generado desde <code>${esc(inputPath)}</code>. Para depurar un fallo con trace, video y screenshot, usá el reporte nativo: <code>npm run report</code>.
+    Generado desde <code>${esc(inputPath)}</code>. Para depurar un fallo con trace, video y screenshot: <code>npm run report</code>.
   </footer>
+
 </div>
+
+<script>
+  /* Un <details> colapsado no imprime su contenido: al exportar a PDF se
+     perdian los mensajes de error. Los abrimos justo antes de imprimir y
+     los devolvemos a su estado original despues, para no alterar la
+     navegacion en pantalla. */
+  (function () {
+    var reopened = [];
+    addEventListener('beforeprint', function () {
+      reopened = [];
+      document.querySelectorAll('details:not([open])').forEach(function (d) {
+        reopened.push(d);
+        d.open = true;
+      });
+    });
+    addEventListener('afterprint', function () {
+      reopened.forEach(function (d) { d.open = false; });
+      reopened = [];
+    });
+  })();
+</script>
 </body>
 </html>`;
 
 mkdirSync(dirname(outputPath), { recursive: true });
 writeFileSync(outputPath, html, 'utf8');
 
-console.log(`[dashboard] ${total} tests · ${counts.passed} pasaron · ${counts.failed} fallaron · ${counts.flaky} inestables · ${counts.skipped} omitidos`);
-console.log(`[dashboard] Tasa de éxito: ${passRate.toFixed(1)}%`);
-console.log(`[dashboard] Generado: ${outputPath}`);
+console.log(
+  `[reporte] ${m.total} tests · ${m.counts.passed} pasaron · ${m.counts.failed} fallaron · ` +
+    `${m.counts.flaky} inestables · ${m.counts.skipped} omitidos`
+);
+console.log(`[reporte] Tasa de éxito: ${m.passRate.toFixed(1)}% · Riesgos sanos: ${risksHealthy}/${m.risks.length}`);
+console.log(`[reporte] Generado: ${outputPath}`);
