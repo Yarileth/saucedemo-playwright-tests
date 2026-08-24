@@ -1,0 +1,24 @@
+{
+  "name": "saucedemo-playwright-tests",
+  "version": "1.0.0",
+  "description": "Suite de automatizacion E2E para saucedemo.com con Playwright + TypeScript, disenada con metodologia ISTQB (escenarios tecnicos y de negocio).",
+  "private": true,
+  "scripts": {
+    "test": "playwright test",
+    "test:headed": "playwright test --headed",
+    "test:ui": "playwright test --ui",
+    "test:smoke": "playwright test --grep @smoke",
+    "test:business": "playwright test tests/business",
+    "test:technical": "playwright test tests/technical",
+    "test:debug": "playwright test --debug",
+    "report": "playwright show-report",
+    "dashboard": "node scripts/generate-dashboard.mjs",
+    "codegen": "playwright codegen https://www.saucedemo.com",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.48.0",
+    "@types/node": "^20.14.0",
+    "typescript": "^5.5.0"
+  }
+}
