@@ -10,6 +10,10 @@ Suite de pruebas end-to-end sobre [saucedemo.com](https://www.saucedemo.com) con
 
 ## Instalación y ejecución
 
+**En Windows, el camino corto:** doble clic en `ejecutar-pruebas.bat`. Instala lo que falte, corre los 41 tests y abre el dashboard solo. Requiere tener [Node.js](https://nodejs.org) instalado.
+
+**A mano, en cualquier sistema:**
+
 ```bash
 npm install
 npx playwright install chromium
@@ -58,6 +62,15 @@ Por eso el proyecto incluye los dos:
 | **Gráficas** | No | Sí |
 
 El dashboard se genera desde `test-results/results.json` con un script sin dependencias (`scripts/generate-dashboard.mjs`), sale como un HTML autocontenido que podés mandar por mail o subir a cualquier lado, y se adapta a tema claro y oscuro. En CI, ambos se publican como artifacts.
+
+Además del resumen por estado, el dashboard trae dos vistas que el reporte nativo no da:
+
+- **Línea de tiempo de la ejecución** — cada test ubicado en el tiempo real de la corrida, en la fila del worker que lo ejecutó. Responde por qué la corrida tardó lo que tardó: dónde se aprovecha el paralelismo, dónde quedan huecos y qué caso empuja el cierre.
+- **Trazabilidad riesgo → casos → estado** — los 10 riesgos del análisis del plan, con los casos que los mitigan y cómo terminó cada uno. Es el puente entre "corrieron los tests" y "los riesgos del negocio están cubiertos".
+
+### Exportar a PDF
+
+El dashboard está pensado para imprimirse: Ctrl+P → *Guardar como PDF* y listo, **sin necesidad de tildar "Gráficos de fondo"**. Todas las gráficas son SVG, no divs con `background-color`, justamente porque los navegadores no imprimen fondos por defecto y un gráfico hecho con fondos sale en blanco. Al imprimir se fuerza la paleta clara, se evita que una tarjeta quede cortada entre dos páginas y se expanden los bloques de error colapsados para que el PDF no pierda información.
 
 Corré `npm test` primero y después `npm run dashboard` — son dos comandos y no uno solo a propósito: si los tests fallan, `npm test` devuelve código distinto de cero y encadenarlos haría que el dashboard no se genere justo cuando más lo necesitás.
 
