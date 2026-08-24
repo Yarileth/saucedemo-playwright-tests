@@ -24,8 +24,15 @@ export class BasePage {
     this.pageTitle = page.getByTestId('title');
     this.cartLink = page.getByTestId('shopping-cart-link');
     this.cartBadge = page.getByTestId('shopping-cart-badge');
-    this.menuButton = page.getByTestId('open-menu');
-    this.closeMenuButton = page.getByTestId('close-menu');
+    // OJO: `data-test="open-menu"` / `data-test="close-menu"` NO están en los
+    // botones, sino en las <img> decorativas del ícono. El botón real que
+    // recibe el clic es un hermano posicionado por encima
+    // (react-burger-menu), así que clickear el testid falla con un timeout:
+    // Playwright detecta que otro elemento intercepta el puntero.
+    // Por eso acá, y solo acá, usamos el id del botón real.
+    // Detectado al correr la suite en CI, no en la revisión de código.
+    this.menuButton = page.locator('#react-burger-menu-btn');
+    this.closeMenuButton = page.locator('#react-burger-cross-btn');
     this.logoutLink = page.getByTestId('logout-sidebar-link');
     this.resetAppStateLink = page.getByTestId('reset-sidebar-link');
     this.allItemsLink = page.getByTestId('inventory-sidebar-link');
