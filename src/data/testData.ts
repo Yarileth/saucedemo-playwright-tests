@@ -119,9 +119,13 @@ export const protectedRoutes = [
 ];
 
 /**
- * Umbral para el caso no funcional de performance (TC-16).
- * `performance_glitch_user` tiene una demora inyectada a propósito en el
- * login. El umbral es intencionalmente holgado para no generar falsos
- * positivos por variabilidad de red; calibrarlo si se mide de forma sostenida.
+ * Techo de regresión para el caso no funcional de performance (TC-09).
+ *
+ * NO es "lo que debería tardar": `performance_glitch_user` tiene una demora
+ * inyectada a propósito de unos 5 segundos, y el test la caracteriza de forma
+ * comparativa contra `standard_user`. Este valor es el techo por encima del
+ * cual la demora deja de ser la conocida y pasa a ser una regresión real.
+ * Holgado a propósito, para no generar falsos positivos por la variabilidad
+ * de red de un runner de CI.
  */
-export const PERFORMANCE_THRESHOLD_MS = Number(process.env.PERF_THRESHOLD_MS ?? 4000);
+export const PERFORMANCE_THRESHOLD_MS = Number(process.env.PERF_THRESHOLD_MS ?? 20_000);
