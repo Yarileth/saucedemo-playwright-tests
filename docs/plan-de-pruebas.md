@@ -222,7 +222,12 @@ El reporte nativo de Playwright está optimizado para **depurar** un fallo, no p
 - **Casos fallados y casos inestables**: cada uno con su mensaje de error completo.
 - **Los 8 casos más lentos** y la **tabla completa** de todos los tests.
 
+- **Línea de tiempo de la ejecución**: cada test ubicado sobre el eje de tiempo real de la corrida, en la fila del worker que lo ejecutó. Es la vista que responde por qué la corrida tardó lo que tardó.
+- **Matriz de trazabilidad riesgo → casos → estado**: los 10 riesgos de la sección 2 con los casos que los mitigan y su resultado en la corrida, más un indicador de "riesgos sanos" en los KPIs. Cierra el circuito entre el análisis de riesgo y la evidencia de ejecución.
+
 Los casos *flaky* se contabilizan como exitosos en la tasa (terminaron pasando) pero se muestran en su propia sección, porque un test inestable señala un problema real: o una condición de carrera en el sitio, o una espera mal planteada en la prueba.
+
+**Exportación a PDF.** Todas las gráficas se dibujan en SVG y no con `background-color` sobre divs. No es un detalle de implementación: los navegadores no imprimen colores de fondo salvo que el usuario tilde explícitamente la opción, de modo que un gráfico construido con fondos sale en blanco al exportar. El `fill` de un `<rect>` es contenido y siempre se imprime. Se suma una hoja de estilos de impresión que fuerza la paleta clara, evita cortar tarjetas entre páginas y expande los bloques de error colapsados.
 
 En CI (workflow incluido en `.github/workflows/playwright.yml`) **ambos** reportes se publican como *artifacts* descargables, con retención de 14 días, usando `if: always()` para que se generen también cuando la corrida falla — que es cuando más se necesitan.
 
