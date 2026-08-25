@@ -1,0 +1,32 @@
+{
+  // Usar la versión de TypeScript del proyecto, no la que trae VS Code,
+  // para que lo que ves en el editor sea lo mismo que valida `npm run typecheck`.
+  "typescript.tsdk": "node_modules/typescript/lib",
+  "typescript.enablePromptUseWorkspaceTsdk": true,
+
+  // Ocultar del explorador lo que se regenera en cada corrida, para que el
+  // árbol muestre solo el código fuente y no el ruido de los reportes.
+  "files.exclude": {
+    "**/node_modules": true,
+    "**/test-results": true,
+    "**/playwright-report": true,
+    "**/blob-report": true
+  },
+
+  // Que las búsquedas no traigan resultados de los reportes generados.
+  "search.exclude": {
+    "**/node_modules": true,
+    "**/test-results": true,
+    "**/playwright-report": true,
+    "**/package-lock.json": true
+  },
+
+  "editor.formatOnSave": true,
+  "files.eol": "\n",
+  "[typescript]": {
+    "editor.defaultFormatter": "esbenp.prettier-vscode"
+  },
+  "[javascript]": {
+    "editor.defaultFormatter": "esbenp.prettier-vscode"
+  }
+}

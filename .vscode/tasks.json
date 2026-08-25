@@ -1,0 +1,50 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "Correr toda la suite",
+      "type": "npm",
+      "script": "test",
+      "group": { "kind": "test", "isDefault": true },
+      "problemMatcher": []
+    },
+    {
+      "label": "Correr solo los casos críticos (@smoke)",
+      "type": "npm",
+      "script": "test:smoke",
+      "group": "test",
+      "problemMatcher": []
+    },
+    {
+      "label": "Abrir Playwright UI Mode",
+      "type": "npm",
+      "script": "test:ui",
+      "group": "test",
+      "problemMatcher": []
+    },
+    {
+      "label": "Generar el reporte con gráficas",
+      "type": "npm",
+      "script": "dashboard",
+      "problemMatcher": []
+    },
+    {
+      // Una sola tarea, no dos encadenadas: `dependsOrder: sequence` se
+      // detiene si la primera falla, y entonces el reporte no se generaria
+      // justo en la corrida que mas falta hace mirar. El script se encarga
+      // de correr ambos pasos y propagar el resultado real de los tests.
+      "label": "Correr la suite y generar el reporte",
+      "type": "npm",
+      "script": "test:report",
+      "group": "test",
+      "problemMatcher": []
+    },
+    {
+      "label": "Verificar tipos",
+      "type": "npm",
+      "script": "typecheck",
+      "group": "build",
+      "problemMatcher": ["$tsc"]
+    }
+  ]
+}

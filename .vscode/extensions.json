@@ -1,0 +1,12 @@
+{
+  // Al abrir este proyecto, VS Code ofrece instalar estas extensiones.
+  // Convierte el repo en "clonar y listo": quien lo abra no tiene que
+  // averiguar qué necesita para correr los tests.
+  "recommendations": [
+    // Explorador de tests, ejecución por caso desde el margen,
+    // selector de locators en vivo y depuración paso a paso.
+    "ms-playwright.playwright",
+    // Formateo consistente del código TypeScript.
+    "esbenp.prettier-vscode"
+  ]
+}
