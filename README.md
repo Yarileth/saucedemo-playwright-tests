@@ -1,5 +1,7 @@
 # Automatización E2E — SauceDemo (Swag Labs)
 
+[![Playwright E2E](https://github.com/Yarileth/saucedemo-playwright-tests/actions/workflows/playwright.yml/badge.svg)](https://github.com/Yarileth/saucedemo-playwright-tests/actions/workflows/playwright.yml)
+
 Suite de pruebas end-to-end sobre [saucedemo.com](https://www.saucedemo.com) con **Playwright + TypeScript**, diseñada con metodología **ISTQB**: análisis de riesgo, técnicas formales de diseño de casos, y trazabilidad riesgo → caso → script.
 
 **35 casos de prueba (41 tests ejecutables), 100% automatizados**, cubriendo los 10 riesgos identificados en el análisis.
@@ -10,22 +12,36 @@ Suite de pruebas end-to-end sobre [saucedemo.com](https://www.saucedemo.com) con
 
 ## Instalación y ejecución
 
-**En Windows, el camino corto:** doble clic en `ejecutar-pruebas.bat`. Instala lo que falte, corre los 41 tests y abre el dashboard solo. Requiere tener [Node.js](https://nodejs.org) instalado.
-
-**A mano, en cualquier sistema:**
-
 ```bash
 npm install
 npx playwright install chromium
 
-npm test                 # toda la suite
+npm run test:report      # corre la suite Y genera el reporte con gráficas
+npm test                 # solo la suite
 npm run test:smoke       # solo casos críticos (@smoke) — chequeo rápido
 npm run test:business    # solo escenarios de negocio (BN-xx)
 npm run test:technical   # solo escenarios técnicos (TC-xx)
-npm run test:ui          # UI mode de Playwright (ideal para desarrollar/depurar)
+npm run test:ui          # UI mode de Playwright — ver los tests correr paso a paso
 npm run report           # abre el reporte nativo de Playwright (traces, videos)
-npm run dashboard        # genera el dashboard con gráficas -> test-results/dashboard.html
+npm run dashboard        # genera solo el reporte con gráficas
 ```
+
+`test:report` es el comando del día a día. Existe porque `npm test && npm run dashboard` **no funciona**: Playwright devuelve un código de salida distinto de cero cuando algún test falla, así que el `&&` corta la cadena y el reporte no se genera justo en la corrida que más falta hace mirar. El script corre los dos pasos por separado y propaga el resultado real de los tests, para que CI siga marcando el fallo.
+
+### En VS Code
+
+El repo trae su configuración versionada en `.vscode/`. Al abrirlo, VS Code ofrece instalar la **extensión de Playwright**, que es la forma más cómoda de trabajar:
+
+- Explorador de tests en la barra lateral, con el estado de cada caso.
+- Correr o depurar un test individual con un clic en el margen, sin tocar la terminal.
+- Seleccionar locators en vivo sobre la página (*Pick locator*).
+- Poner breakpoints y recorrer un test paso a paso.
+
+Las tareas del proyecto están en **Ctrl+Shift+P → Run Task**: correr la suite, solo los `@smoke`, abrir UI Mode, generar el reporte o verificar tipos.
+
+### En Windows, sin terminal
+
+Doble clic en `ejecutar-pruebas.bat`: instala lo que falte, corre los 41 tests y abre el reporte solo. Es un atajo pensado para cuando querés el resultado rápido o para que alguien no técnico pueda correr la suite; el flujo de trabajo normal es VS Code o los `npm run` de arriba. Requiere [Node.js](https://nodejs.org) instalado.
 
 ---
 

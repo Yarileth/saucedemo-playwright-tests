@@ -5,6 +5,7 @@
   "private": true,
   "scripts": {
     "test": "playwright test",
+    "test:report": "node scripts/run-and-report.mjs",
     "test:headed": "playwright test --headed",
     "test:ui": "playwright test --ui",
     "test:smoke": "playwright test --grep @smoke",

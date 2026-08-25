@@ -17,27 +17,22 @@ if errorlevel 1 (
 )
 
 if not exist node_modules (
-  echo [1/4] Instalando dependencias... ^(solo la primera vez^)
+  echo [1/3] Instalando dependencias... ^(solo la primera vez^)
   call npm install
   if errorlevel 1 goto :error
 ) else (
-  echo [1/4] Dependencias ya instaladas.
+  echo [1/3] Dependencias ya instaladas.
 )
 echo.
 
-echo [2/4] Instalando el navegador Chromium... ^(solo la primera vez^)
+echo [2/3] Instalando el navegador Chromium... ^(solo la primera vez^)
 call npx playwright install chromium
 if errorlevel 1 goto :error
 echo.
 
-echo [3/4] Ejecutando los 41 tests...
-call npx playwright test
+echo [3/3] Ejecutando los 41 tests y generando el reporte...
+call npm run test:report
 set TEST_EXIT=%errorlevel%
-echo.
-
-echo [4/4] Generando el dashboard con graficas...
-call npm run dashboard
-if errorlevel 1 goto :error
 echo.
 
 if exist "test-results\\dashboard.html" (
